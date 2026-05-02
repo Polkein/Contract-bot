@@ -1,3 +1,6 @@
+const fs = require("fs");
+const path = require("path");
+
 const {
   Client,
   GatewayIntentBits,
@@ -20,12 +23,62 @@ for (const key of requiredEnv) {
   }
 }
 
+const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || "/data";
+const DATA_FILE = path.join(DATA_DIR, "contracts.json");
+
+let parties = new Map();
+let busyUsers = new Map();
+
+function loadData() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+
+    if (!fs.existsSync(DATA_FILE)) {
+      saveData();
+      return;
+    }
+
+    const raw = fs.readFileSync(DATA_FILE, "utf8");
+    if (!raw.trim()) return;
+
+    const data = JSON.parse(raw);
+
+    parties = new Map(data.parties || []);
+    busyUsers = new Map(data.busyUsers || []);
+
+    console.log("Данные контрактов загружены");
+  } catch (error) {
+    console.error("Ошибка загрузки данных:", error);
+  }
+}
+
+function saveData() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+
+    fs.writeFileSync(
+      DATA_FILE,
+      JSON.stringify(
+        {
+          parties: Array.from(parties.entries()),
+          busyUsers: Array.from(busyUsers.entries())
+        },
+        null,
+        2
+      )
+    );
+  } catch (error) {
+    console.error("Ошибка сохранения данных:", error);
+  }
+}
+
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
-
-const parties = new Map();
-const busyUsers = new Map();
 
 const commands = [
   new SlashCommandBuilder()
@@ -78,6 +131,11 @@ async function deployCommands() {
 function hasHighRole(member) {
   const allowedRoles = process.env.HIGHROLES.split(",").map(role => role.trim());
   return member.roles.cache.some(role => allowedRoles.includes(role.id));
+}
+
+function extractMessageId(input) {
+  const match = input.match(/\d{17,25}$/);
+  return match ? match[0] : input;
 }
 
 function makeEmbed(party) {
@@ -156,242 +214,256 @@ function makeButtons(status) {
 }
 
 async function updateContractMessage(interaction, messageId, party) {
-  const msg = await interaction.channel.messages.fetch(messageId);
+  try {
+    const msg = await interaction.channel.messages.fetch(messageId);
 
-  await msg.edit({
-    embeds: [makeEmbed(party)],
-    components: makeButtons(party.status)
-  });
-}
-
-client.on("interactionCreate", async interaction => {
-  if (interaction.isChatInputCommand()) {
-    if (interaction.commandName === "contract") {
-      const party = {
-        users: [],
-        status: "open"
-      };
-
-      const msg = await interaction.reply({
-        embeds: [makeEmbed(party)],
-        components: makeButtons(party.status),
-        fetchReply: true
-      });
-
-      parties.set(msg.id, party);
-      return;
-    }
-
-    if (interaction.commandName === "contract-add") {
-      if (!hasHighRole(interaction.member)) {
-        return interaction.reply({
-          content: "Только старший может добавлять участников",
-          ephemeral: true
-        });
-      }
-
-      const messageId = interaction.options.getString("message_id");
-      const user = interaction.options.getUser("user");
-      const party = parties.get(messageId);
-
-      if (!party) {
-        return interaction.reply({
-          content: "Контракт не найден. Проверь ID сообщения.",
-          ephemeral: true
-        });
-      }
-
-      if (party.status !== "open") {
-        return interaction.reply({
-          content: "Добавлять можно только пока набор открыт.",
-          ephemeral: true
-        });
-      }
-
-      if (party.users.includes(user.id)) {
-        return interaction.reply({
-          content: "Этот участник уже записан в этот контракт.",
-          ephemeral: true
-        });
-      }
-
-      if (busyUsers.has(user.id)) {
-        return interaction.reply({
-          content: "Этот участник уже находится в другом активном контракте.",
-          ephemeral: true
-        });
-      }
-
-      if (party.users.length >= 4) {
-        return interaction.reply({
-          content: "Мест больше нет (4/4).",
-          ephemeral: true
-        });
-      }
-
-      party.users.push(user.id);
-      busyUsers.set(user.id, messageId);
-
-      await updateContractMessage(interaction, messageId, party);
-
-      return interaction.reply({
-        content: `Участник ${user} добавлен в контракт.`,
-        ephemeral: true
-      });
-    }
-
-    if (interaction.commandName === "contract-remove") {
-      if (!hasHighRole(interaction.member)) {
-        return interaction.reply({
-          content: "Только старший может убирать участников",
-          ephemeral: true
-        });
-      }
-
-      const messageId = interaction.options.getString("message_id");
-      const user = interaction.options.getUser("user");
-      const party = parties.get(messageId);
-
-      if (!party) {
-        return interaction.reply({
-          content: "Контракт не найден. Проверь ID сообщения.",
-          ephemeral: true
-        });
-      }
-
-      if (!party.users.includes(user.id)) {
-        return interaction.reply({
-          content: "Этого участника нет в контракте.",
-          ephemeral: true
-        });
-      }
-
-      party.users = party.users.filter(id => id !== user.id);
-      busyUsers.delete(user.id);
-
-      await updateContractMessage(interaction, messageId, party);
-
-      return interaction.reply({
-        content: `Участник ${user} убран из контракта.`,
-        ephemeral: true
-      });
-    }
-
-    if (interaction.commandName === "contract-reset") {
-      if (!hasHighRole(interaction.member)) {
-        return interaction.reply({
-          content: "Только старший может сбрасывать занятость участника.",
-          ephemeral: true
-        });
-      }
-
-      const user = interaction.options.getUser("user");
-
-      busyUsers.delete(user.id);
-
-      for (const party of parties.values()) {
-        party.users = party.users.filter(id => id !== user.id);
-      }
-
-      return interaction.reply({
-        content: `${user} освобождён(а) от старого контракта.`,
-        ephemeral: true
-      });
-    }
-  }
-
-  if (interaction.isButton()) {
-    const party = parties.get(interaction.message.id);
-    if (!party) return;
-
-    const userId = interaction.user.id;
-
-    if (interaction.customId === "join") {
-      if (party.status !== "open") {
-        return interaction.reply({
-          content: "Набор уже закрыт",
-          ephemeral: true
-        });
-      }
-
-      if (party.users.includes(userId)) {
-        return interaction.reply({
-          content: "Ты уже записан(а)",
-          ephemeral: true
-        });
-      }
-
-      if (busyUsers.has(userId)) {
-        return interaction.reply({
-          content: "Ты уже участвуешь в другом контракте. Сначала дождись его завершения.",
-          ephemeral: true
-        });
-      }
-
-      if (party.users.length >= 4) {
-        return interaction.reply({
-          content: "Мест больше нет (4/4)",
-          ephemeral: true
-        });
-      }
-
-      party.users.push(userId);
-      busyUsers.set(userId, interaction.message.id);
-    }
-
-    if (interaction.customId === "leave") {
-      if (party.status !== "open") {
-        return interaction.reply({
-          content: "Нельзя выйти: набор уже закрыт",
-          ephemeral: true
-        });
-      }
-
-      party.users = party.users.filter(id => id !== userId);
-      busyUsers.delete(userId);
-    }
-
-    if (interaction.customId === "start") {
-      if (!hasHighRole(interaction.member)) {
-        return interaction.reply({
-          content: "Только старший может закрыть набор",
-          ephemeral: true
-        });
-      }
-
-      if (party.users.length < 2) {
-        return interaction.reply({
-          content: "Нужно минимум 2 участника",
-          ephemeral: true
-        });
-      }
-
-      party.status = "running";
-    }
-
-    if (interaction.customId === "finish") {
-      if (!hasHighRole(interaction.member)) {
-        return interaction.reply({
-          content: "Только старший может закрыть контракт",
-          ephemeral: true
-        });
-      }
-
-      party.status = "closed";
-
-      for (const id of party.users) {
-        busyUsers.delete(id);
-      }
-    }
-
-    await interaction.update({
+    await msg.edit({
       embeds: [makeEmbed(party)],
       components: makeButtons(party.status)
     });
+
+    return true;
+  } catch (error) {
+    console.error("Ошибка обновления сообщения контракта:", error);
+
+    if (error.code === 50001) {
+      await interaction.followUp({
+        content: "У бота нет доступа к сообщению/каналу. Проверь права бота в канале.",
+        ephemeral: true
+      }).catch(() => {});
+    }
+
+    return false;
+  }
+}
+
+client.on("interactionCreate", async interaction => {
+  try {
+    if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === "contract") {
+        const party = {
+          users: [],
+          status: "open"
+        };
+
+        const msg = await interaction.reply({
+          embeds: [makeEmbed(party)],
+          components: makeButtons(party.status),
+          fetchReply: true
+        });
+
+        parties.set(msg.id, party);
+        saveData();
+        return;
+      }
+
+      if (interaction.commandName === "contract-add") {
+        await interaction.deferReply({ ephemeral: true });
+
+        if (!hasHighRole(interaction.member)) {
+          return interaction.editReply("Только старший может добавлять участников");
+        }
+
+        const messageId = extractMessageId(interaction.options.getString("message_id"));
+        const user = interaction.options.getUser("user");
+        const party = parties.get(messageId);
+
+        if (!party) {
+          return interaction.editReply("Контракт не найден. Проверь ID сообщения.");
+        }
+
+        if (party.status !== "open") {
+          return interaction.editReply("Добавлять можно только пока набор открыт.");
+        }
+
+        if (party.users.includes(user.id)) {
+          return interaction.editReply("Этот участник уже записан в этот контракт.");
+        }
+
+        if (busyUsers.has(user.id)) {
+          return interaction.editReply("Этот участник уже находится в другом активном контракте.");
+        }
+
+        if (party.users.length >= 4) {
+          return interaction.editReply("Мест больше нет (4/4).");
+        }
+
+        party.users.push(user.id);
+        busyUsers.set(user.id, messageId);
+        saveData();
+
+        const updated = await updateContractMessage(interaction, messageId, party);
+        if (!updated) return;
+
+        return interaction.editReply(`Участник ${user} добавлен в контракт.`);
+      }
+
+      if (interaction.commandName === "contract-remove") {
+        await interaction.deferReply({ ephemeral: true });
+
+        if (!hasHighRole(interaction.member)) {
+          return interaction.editReply("Только старший может убирать участников");
+        }
+
+        const messageId = extractMessageId(interaction.options.getString("message_id"));
+        const user = interaction.options.getUser("user");
+        const party = parties.get(messageId);
+
+        if (!party) {
+          return interaction.editReply("Контракт не найден. Проверь ID сообщения.");
+        }
+
+        if (!party.users.includes(user.id)) {
+          return interaction.editReply("Этого участника нет в контракте.");
+        }
+
+        party.users = party.users.filter(id => id !== user.id);
+        busyUsers.delete(user.id);
+        saveData();
+
+        const updated = await updateContractMessage(interaction, messageId, party);
+        if (!updated) return;
+
+        return interaction.editReply(`Участник ${user} убран из контракта.`);
+      }
+
+      if (interaction.commandName === "contract-reset") {
+        await interaction.deferReply({ ephemeral: true });
+
+        if (!hasHighRole(interaction.member)) {
+          return interaction.editReply("Только старший может сбрасывать занятость участника.");
+        }
+
+        const user = interaction.options.getUser("user");
+
+        busyUsers.delete(user.id);
+
+        for (const party of parties.values()) {
+          party.users = party.users.filter(id => id !== user.id);
+        }
+
+        saveData();
+
+        return interaction.editReply(`${user} освобождён(а) от старого контракта.`);
+      }
+    }
+
+    if (interaction.isButton()) {
+      const party = parties.get(interaction.message.id);
+
+      if (!party) {
+        return interaction.reply({
+          content: "Контракт не найден в памяти бота. Обратитесь к Contract Manager.",
+          ephemeral: true
+        });
+      }
+
+      const userId = interaction.user.id;
+
+      if (interaction.customId === "join") {
+        if (party.status !== "open") {
+          return interaction.reply({
+            content: "Набор уже закрыт",
+            ephemeral: true
+          });
+        }
+
+        if (party.users.includes(userId)) {
+          return interaction.reply({
+            content: "Ты уже записан(а)",
+            ephemeral: true
+          });
+        }
+
+        if (busyUsers.has(userId)) {
+          return interaction.reply({
+            content: "Ты уже участвуешь в другом контракте. Сначала дождись его завершения.",
+            ephemeral: true
+          });
+        }
+
+        if (party.users.length >= 4) {
+          return interaction.reply({
+            content: "Мест больше нет (4/4)",
+            ephemeral: true
+          });
+        }
+
+        party.users.push(userId);
+        busyUsers.set(userId, interaction.message.id);
+      }
+
+      if (interaction.customId === "leave") {
+        if (party.status !== "open") {
+          return interaction.reply({
+            content: "Нельзя выйти: набор уже закрыт",
+            ephemeral: true
+          });
+        }
+
+        party.users = party.users.filter(id => id !== userId);
+        busyUsers.delete(userId);
+      }
+
+      if (interaction.customId === "start") {
+        if (!hasHighRole(interaction.member)) {
+          return interaction.reply({
+            content: "Только старший может закрыть набор",
+            ephemeral: true
+          });
+        }
+
+        if (party.users.length < 2) {
+          return interaction.reply({
+            content: "Нужно минимум 2 участника",
+            ephemeral: true
+          });
+        }
+
+        party.status = "running";
+      }
+
+      if (interaction.customId === "finish") {
+        if (!hasHighRole(interaction.member)) {
+          return interaction.reply({
+            content: "Только старший может закрыть контракт",
+            ephemeral: true
+          });
+        }
+
+        party.status = "closed";
+
+        for (const id of party.users) {
+          busyUsers.delete(id);
+        }
+      }
+
+      saveData();
+
+      await interaction.update({
+        embeds: [makeEmbed(party)],
+        components: makeButtons(party.status)
+      });
+    }
+  } catch (error) {
+    console.error("Ошибка interactionCreate:", error);
+
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp({
+        content: "Произошла ошибка. Проверьте логи бота.",
+        ephemeral: true
+      }).catch(() => {});
+    } else {
+      await interaction.reply({
+        content: "Произошла ошибка. Проверьте логи бота.",
+        ephemeral: true
+      }).catch(() => {});
+    }
   }
 });
 
 client.once("clientReady", () => {
+  loadData();
   console.log("Бот запущен");
 });
 
