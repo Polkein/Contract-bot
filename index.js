@@ -14,7 +14,13 @@ const {
   PermissionFlagsBits
 } = require("discord.js");
 
-const requiredEnv = ["TOKEN", "CLIENT_ID", "GUILD_ID", "HIGHROLES"];
+const requiredEnv = [
+  "TOKEN",
+  "CLIENT_ID",
+  "GUILD_ID",
+  "HIGHROLES",
+  "CONTRACT_CHANNEL_ID"
+];
 
 for (const key of requiredEnv) {
   if (!process.env[key]) {
@@ -44,7 +50,6 @@ function loadData() {
     if (!raw.trim()) return;
 
     const data = JSON.parse(raw);
-
     parties = new Map(data.parties || []);
     busyUsers = new Map(data.busyUsers || []);
 
@@ -131,6 +136,10 @@ async function deployCommands() {
 function hasHighRole(member) {
   const allowedRoles = process.env.HIGHROLES.split(",").map(role => role.trim());
   return member.roles.cache.some(role => allowedRoles.includes(role.id));
+}
+
+function isContractChannel(interaction) {
+  return interaction.channelId === process.env.CONTRACT_CHANNEL_ID;
 }
 
 function extractMessageId(input) {
@@ -226,12 +235,10 @@ async function updateContractMessage(interaction, messageId, party) {
   } catch (error) {
     console.error("Ошибка обновления сообщения контракта:", error);
 
-    if (error.code === 50001) {
-      await interaction.followUp({
-        content: "У бота нет доступа к сообщению/каналу. Проверь права бота в канале.",
-        ephemeral: true
-      }).catch(() => {});
-    }
+    await interaction.followUp({
+      content: "Не удалось обновить сообщение контракта. Проверь ID сообщения и права бота.",
+      ephemeral: true
+    }).catch(() => {});
 
     return false;
   }
@@ -240,6 +247,13 @@ async function updateContractMessage(interaction, messageId, party) {
 client.on("interactionCreate", async interaction => {
   try {
     if (interaction.isChatInputCommand()) {
+      if (!isContractChannel(interaction)) {
+        return interaction.reply({
+          content: "Команды контрактов можно использовать только в канале #запись-на-контракты.",
+          ephemeral: true
+        });
+      }
+
       if (interaction.commandName === "contract") {
         const party = {
           users: [],
@@ -261,32 +275,18 @@ client.on("interactionCreate", async interaction => {
         await interaction.deferReply({ ephemeral: true });
 
         if (!hasHighRole(interaction.member)) {
-          return interaction.editReply("Только старший может добавлять участников");
+          return interaction.editReply("Только Contract Manager может добавлять участников.");
         }
 
         const messageId = extractMessageId(interaction.options.getString("message_id"));
         const user = interaction.options.getUser("user");
         const party = parties.get(messageId);
 
-        if (!party) {
-          return interaction.editReply("Контракт не найден. Проверь ID сообщения.");
-        }
-
-        if (party.status !== "open") {
-          return interaction.editReply("Добавлять можно только пока набор открыт.");
-        }
-
-        if (party.users.includes(user.id)) {
-          return interaction.editReply("Этот участник уже записан в этот контракт.");
-        }
-
-        if (busyUsers.has(user.id)) {
-          return interaction.editReply("Этот участник уже находится в другом активном контракте.");
-        }
-
-        if (party.users.length >= 4) {
-          return interaction.editReply("Мест больше нет (4/4).");
-        }
+        if (!party) return interaction.editReply("Контракт не найден. Проверь ID сообщения.");
+        if (party.status !== "open") return interaction.editReply("Добавлять можно только пока набор открыт.");
+        if (party.users.includes(user.id)) return interaction.editReply("Этот участник уже записан в этот контракт.");
+        if (busyUsers.has(user.id)) return interaction.editReply("Этот участник уже находится в другом активном контракте.");
+        if (party.users.length >= 4) return interaction.editReply("Мест больше нет (4/4).");
 
         party.users.push(user.id);
         busyUsers.set(user.id, messageId);
@@ -302,20 +302,15 @@ client.on("interactionCreate", async interaction => {
         await interaction.deferReply({ ephemeral: true });
 
         if (!hasHighRole(interaction.member)) {
-          return interaction.editReply("Только старший может убирать участников");
+          return interaction.editReply("Только Contract Manager может убирать участников.");
         }
 
         const messageId = extractMessageId(interaction.options.getString("message_id"));
         const user = interaction.options.getUser("user");
         const party = parties.get(messageId);
 
-        if (!party) {
-          return interaction.editReply("Контракт не найден. Проверь ID сообщения.");
-        }
-
-        if (!party.users.includes(user.id)) {
-          return interaction.editReply("Этого участника нет в контракте.");
-        }
+        if (!party) return interaction.editReply("Контракт не найден. Проверь ID сообщения.");
+        if (!party.users.includes(user.id)) return interaction.editReply("Этого участника нет в контракте.");
 
         party.users = party.users.filter(id => id !== user.id);
         busyUsers.delete(user.id);
@@ -331,7 +326,7 @@ client.on("interactionCreate", async interaction => {
         await interaction.deferReply({ ephemeral: true });
 
         if (!hasHighRole(interaction.member)) {
-          return interaction.editReply("Только старший может сбрасывать занятость участника.");
+          return interaction.editReply("Только Contract Manager может сбрасывать занятость участника.");
         }
 
         const user = interaction.options.getUser("user");
@@ -353,7 +348,7 @@ client.on("interactionCreate", async interaction => {
 
       if (!party) {
         return interaction.reply({
-          content: "Контракт не найден в памяти бота. Обратитесь к Contract Manager.",
+          content: "Контракт не найден. Обратитесь к Contract Manager.",
           ephemeral: true
         });
       }
@@ -362,17 +357,11 @@ client.on("interactionCreate", async interaction => {
 
       if (interaction.customId === "join") {
         if (party.status !== "open") {
-          return interaction.reply({
-            content: "Набор уже закрыт",
-            ephemeral: true
-          });
+          return interaction.reply({ content: "Набор уже закрыт", ephemeral: true });
         }
 
         if (party.users.includes(userId)) {
-          return interaction.reply({
-            content: "Ты уже записан(а)",
-            ephemeral: true
-          });
+          return interaction.reply({ content: "Ты уже записан(а)", ephemeral: true });
         }
 
         if (busyUsers.has(userId)) {
@@ -383,10 +372,7 @@ client.on("interactionCreate", async interaction => {
         }
 
         if (party.users.length >= 4) {
-          return interaction.reply({
-            content: "Мест больше нет (4/4)",
-            ephemeral: true
-          });
+          return interaction.reply({ content: "Мест больше нет (4/4)", ephemeral: true });
         }
 
         party.users.push(userId);
@@ -408,7 +394,7 @@ client.on("interactionCreate", async interaction => {
       if (interaction.customId === "start") {
         if (!hasHighRole(interaction.member)) {
           return interaction.reply({
-            content: "Только старший может закрыть набор",
+            content: "Только Contract Manager может закрыть набор.",
             ephemeral: true
           });
         }
@@ -426,7 +412,7 @@ client.on("interactionCreate", async interaction => {
       if (interaction.customId === "finish") {
         if (!hasHighRole(interaction.member)) {
           return interaction.reply({
-            content: "Только старший может закрыть контракт",
+            content: "Только Contract Manager может закрыть контракт.",
             ephemeral: true
           });
         }
