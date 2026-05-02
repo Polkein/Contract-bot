@@ -1,5 +1,3 @@
-require("dotenv").config();
-
 const {
   Client,
   GatewayIntentBits,
@@ -12,6 +10,15 @@ const {
   EmbedBuilder,
   PermissionFlagsBits
 } = require("discord.js");
+
+const requiredEnv = ["TOKEN", "CLIENT_ID", "GUILD_ID", "HIGHROLES"];
+
+for (const key of requiredEnv) {
+  if (!process.env[key]) {
+    console.error(`Ошибка: переменная ${key} не найдена`);
+    process.exit(1);
+  }
+}
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
@@ -73,7 +80,7 @@ async function deployCommands() {
 }
 
 function hasHighRole(member) {
-  const allowedRoles = process.env.HIGHROLES.split(",");
+  const allowedRoles = process.env.HIGHROLES.split(",").map(role => role.trim());
   return member.roles.cache.some(role => allowedRoles.includes(role.id));
 }
 
