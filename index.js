@@ -38,16 +38,10 @@ const commands = [
     .setName("contract-add")
     .setDescription("Добавить участника в конкретный контракт")
     .addStringOption(option =>
-      option
-        .setName("message_id")
-        .setDescription("ID сообщения контракта")
-        .setRequired(true)
+      option.setName("message_id").setDescription("ID сообщения контракта").setRequired(true)
     )
     .addUserOption(option =>
-      option
-        .setName("user")
-        .setDescription("Кого добавить")
-        .setRequired(true)
+      option.setName("user").setDescription("Кого добавить").setRequired(true)
     )
     .toJSON(),
 
@@ -55,16 +49,18 @@ const commands = [
     .setName("contract-remove")
     .setDescription("Убрать участника из конкретного контракта")
     .addStringOption(option =>
-      option
-        .setName("message_id")
-        .setDescription("ID сообщения контракта")
-        .setRequired(true)
+      option.setName("message_id").setDescription("ID сообщения контракта").setRequired(true)
     )
     .addUserOption(option =>
-      option
-        .setName("user")
-        .setDescription("Кого убрать")
-        .setRequired(true)
+      option.setName("user").setDescription("Кого убрать").setRequired(true)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("contract-reset")
+    .setDescription("Снять участника с занятости, если он застрял")
+    .addUserOption(option =>
+      option.setName("user").setDescription("Кого освободить").setRequired(true)
     )
     .toJSON()
 ];
@@ -109,7 +105,7 @@ function makeButtons(status) {
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId("join")
-          .setLabel("Войти")
+          .setLabel("Записаться")
           .setStyle(ButtonStyle.Success),
 
         new ButtonBuilder()
@@ -130,7 +126,7 @@ function makeButtons(status) {
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId("join_disabled")
-          .setLabel("Войти")
+          .setLabel("Записаться")
           .setStyle(ButtonStyle.Success)
           .setDisabled(true),
 
@@ -160,8 +156,7 @@ function makeButtons(status) {
 }
 
 async function updateContractMessage(interaction, messageId, party) {
-  const channel = interaction.channel;
-  const msg = await channel.messages.fetch(messageId);
+  const msg = await interaction.channel.messages.fetch(messageId);
 
   await msg.edit({
     embeds: [makeEmbed(party)],
@@ -278,6 +273,28 @@ client.on("interactionCreate", async interaction => {
 
       return interaction.reply({
         content: `Участник ${user} убран из контракта.`,
+        ephemeral: true
+      });
+    }
+
+    if (interaction.commandName === "contract-reset") {
+      if (!hasHighRole(interaction.member)) {
+        return interaction.reply({
+          content: "Только старший может сбрасывать занятость участника.",
+          ephemeral: true
+        });
+      }
+
+      const user = interaction.options.getUser("user");
+
+      busyUsers.delete(user.id);
+
+      for (const party of parties.values()) {
+        party.users = party.users.filter(id => id !== user.id);
+      }
+
+      return interaction.reply({
+        content: `${user} освобождён(а) от старого контракта.`,
         ephemeral: true
       });
     }
