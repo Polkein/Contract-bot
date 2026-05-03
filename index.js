@@ -290,10 +290,17 @@ client.on("interactionCreate", async interaction => {
 
         party.users.push(user.id);
         busyUsers.set(user.id, messageId);
-        saveData();
 
         const updated = await updateContractMessage(interaction, messageId, party);
-        if (!updated) return;
+
+        if (!updated) {
+          party.users = party.users.filter(id => id !== user.id);
+          busyUsers.delete(user.id);
+
+          return interaction.editReply("Не удалось обновить сообщение контракта. Участник не был добавлен.");
+        }
+
+        saveData();
 
         return interaction.editReply(`Участник ${user} добавлен в контракт.`);
       }
@@ -312,12 +319,25 @@ client.on("interactionCreate", async interaction => {
         if (!party) return interaction.editReply("Контракт не найден. Проверь ID сообщения.");
         if (!party.users.includes(user.id)) return interaction.editReply("Этого участника нет в контракте.");
 
+        const oldUsers = [...party.users];
+        const wasBusyInThisContract = busyUsers.get(user.id) === messageId;
+
         party.users = party.users.filter(id => id !== user.id);
         busyUsers.delete(user.id);
-        saveData();
 
         const updated = await updateContractMessage(interaction, messageId, party);
-        if (!updated) return;
+
+        if (!updated) {
+          party.users = oldUsers;
+
+          if (wasBusyInThisContract) {
+            busyUsers.set(user.id, messageId);
+          }
+
+          return interaction.editReply("Не удалось обновить сообщение контракта. Участник не был убран.");
+        }
+
+        saveData();
 
         return interaction.editReply(`Участник ${user} убран из контракта.`);
       }
